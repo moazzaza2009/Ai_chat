@@ -14,11 +14,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- Setup lowdb ---
+// --- Setup lowdb with default data ---
 const adapter = new JSONFile('db.json');
 const db = new Low(adapter);
 
-await initDb();
+// Define default data
+db.data = {
+  users: [],
+  chats: [],
+};
+
+await db.read();
 
 // --- Auth Middleware ---
 const auth = (req, res, next) => {
