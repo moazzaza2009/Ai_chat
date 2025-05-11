@@ -12,11 +12,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Define User schema and model
 const userSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   password: String,
 });
 
+const User = mongoose.model('User', userSchema);
+
+// Define Chat schema and model
 const chatSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   title: String,
@@ -24,9 +28,9 @@ const chatSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-const User = mongoose.model('User', userSchema);
 const Chat = mongoose.model('Chat', chatSchema);
 
+// Middleware to verify JWT token
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ msg: 'No token provided' });
@@ -40,6 +44,7 @@ const auth = (req, res, next) => {
   }
 };
 
+// User Signup Route
 app.post('/api/signup', async (req, res) => {
   const { email, password } = req.body;
 
@@ -54,6 +59,7 @@ app.post('/api/signup', async (req, res) => {
   res.json({ token });
 });
 
+// User Login Route
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
 
@@ -67,11 +73,13 @@ app.post('/api/login', async (req, res) => {
   res.json({ token });
 });
 
+// Get User Chats Route
 app.get('/api/chats', auth, async (req, res) => {
   const chats = await Chat.find({ userId: req.userId }).sort({ createdAt: -1 });
   res.json(chats);
 });
 
+// Send Chat Message Route
 app.post('/api/chat', auth, async (req, res) => {
   const { message, chatId } = req.body;
 
@@ -113,6 +121,7 @@ app.post('/api/chat', auth, async (req, res) => {
   }
 });
 
+// Connect to MongoDB and start the server
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => app.listen(3000, () => console.log('🚀 Server running at http://localhost:3000')))
