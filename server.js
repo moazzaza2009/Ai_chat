@@ -1,98 +1,103 @@
+require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
+const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const cors = require('cors');
-const dotenv = require('dotenv');
 const axios = require('axios');
-
-dotenv.config();
+const { Low } = require('lowdb');
+const { JSONFile } = require('lowdb/node');
+const { nanoid } = require('nanoid');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Define User schema and model
-const userSchema = new mongoose.Schema({
-  email: { type: String, unique: true },
-  password: String,
-});
+// --- Setup lowdb ---
+const adapter = new JSONFile('db.json');
+const db = new Low(adapter);
 
-const User = mongoose.model('User', userSchema);
+async function initDb() {
+  await db.read();
+  db.data ||= { users: [], chats: [] };
+  await db.write();
+}
+initDb();
 
-// Define Chat schema and model
-const chatSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  title: String,
-  messages: [{ role: String, content: String }],
-  createdAt: { type: Date, default: Date.now },
-});
-
-const Chat = mongoose.model('Chat', chatSchema);
-
-// Middleware to verify JWT token
+// --- Auth Middleware ---
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ msg: 'No token provided' });
-
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = decoded.id;
+    const { id } = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = id;
     next();
-  } catch (err) {
-    return res.status(401).json({ msg: 'Invalid token' });
+  } catch {
+    res.status(401).json({ msg: 'Invalid token' });
   }
 };
 
-// User Signup Route
+// --- Routes ---
 app.post('/api/signup', async (req, res) => {
   const { email, password } = req.body;
+  await db.read();
 
-  const exists = await User.findOne({ email });
-  if (exists) return res.status(400).json({ msg: 'User already exists' });
+  // Check if the email is already taken
+  if (db.data.users.find(u => u.email === email)) {
+    return res.status(400).json({ msg: 'Email already exists' });
+  }
 
+  // Hash the password
   const hashed = await bcrypt.hash(password, 10);
-  const user = new User({ email, password: hashed });
-  await user.save();
 
-  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+  // Add the new user
+  const user = { id: nanoid(), email, password: hashed };
+  db.data.users.push(user);
+  await db.write();
+
+  // Generate a JWT token
+  const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET);
   res.json({ token });
 });
 
-// User Login Route
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
-
-  const user = await User.findOne({ email });
+  await db.read();
+  
+  // Find the user by email
+  const user = db.data.users.find(u => u.email === email);
   if (!user) return res.status(400).json({ msg: 'User not found' });
+  
+  // Check if the password matches
+  if (!(await bcrypt.compare(password, user.password))) {
+    return res.status(400).json({ msg: 'Incorrect password' });
+  }
 
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.status(400).json({ msg: 'Incorrect password' });
-
-  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+  // Generate a JWT token
+  const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET);
   res.json({ token });
 });
 
-// Get User Chats Route
 app.get('/api/chats', auth, async (req, res) => {
-  const chats = await Chat.find({ userId: req.userId }).sort({ createdAt: -1 });
+  await db.read();
+  const chats = db.data.chats.filter(c => c.userId === req.userId);
   res.json(chats);
 });
 
-// Send Chat Message Route
 app.post('/api/chat', auth, async (req, res) => {
   const { message, chatId } = req.body;
+  await db.read();
 
-  let chat;
-  if (chatId) {
-    chat = await Chat.findOne({ _id: chatId, userId: req.userId });
-    if (!chat) return res.status(404).json({ msg: 'Chat not found' });
-  } else {
-    chat = new Chat({ userId: req.userId, messages: [] });
+  // Check if the chat exists
+  let chat = db.data.chats.find(c => c.id === chatId && c.userId === req.userId);
+  if (!chat) {
+    chat = { id: nanoid(), userId: req.userId, title: '', messages: [] };
+    db.data.chats.push(chat);
   }
 
+  // Add the user message to the chat
   chat.messages.push({ role: 'user', content: message });
 
+  // Send the message to OpenAI API
   try {
     const openaiRes = await axios.post(
       'https://api.openai.com/v1/chat/completions',
@@ -107,13 +112,15 @@ app.post('/api/chat', auth, async (req, res) => {
         },
       }
     );
-
+    
+    // Get the OpenAI reply and add it to the chat
     const reply = openaiRes.data.choices[0].message;
     chat.messages.push(reply);
 
+    // Set the title of the chat if it's not set
     if (!chat.title) chat.title = message.slice(0, 30);
-    await chat.save();
 
+    await db.write();
     res.json({ chat });
   } catch (err) {
     console.error('OpenAI Error:', err.response?.data || err.message);
@@ -121,8 +128,6 @@ app.post('/api/chat', auth, async (req, res) => {
   }
 });
 
-// Connect to MongoDB and start the server
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => app.listen(3000, () => console.log('🚀 Server running at http://localhost:3000')))
-  .catch((err) => console.error('MongoDB connection error:', err));
+// --- Start Server ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
